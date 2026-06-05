@@ -1,7 +1,5 @@
 import requests
 import asyncio
-import nest_asyncio
-nest_asyncio.apply()
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
