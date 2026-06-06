@@ -1,8 +1,6 @@
 import os
 import requests
-import asyncio
 from datetime import datetime, timedelta
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ChatAction
@@ -17,84 +15,98 @@ OPENWEATHER_KEY = os.getenv("OPENWEATHER_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_KEY", "")
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-RAPIDAPI_HOST = "free-api-live-football-data.p.rapidapi.com"
-RAPIDAPI_BASE = f"https://{RAPIDAPI_HOST}"
+SOFA_HOST = "sofascore.p.rapidapi.com"
+SOFA_BASE = f"https://{SOFA_HOST}"
 TAVILY_URL = "https://api.tavily.com/search"
 
-RAPIDAPI_HEADERS = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
+HEADERS = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": SOFA_HOST}
 
 
+# ============================================================
+# ПОИСК КОМАНДЫ (поддерживает русские названия!)
+# ============================================================
 def search_team(team_name: str) -> dict:
+    """Ищет команду через Sofascore. Возвращает {id, name}."""
     try:
-        url = f"{RAPIDAPI_BASE}/football-search?search={requests.utils.quote(team_name)}"
-        r = requests.get(url, headers=RAPIDAPI_HEADERS, timeout=10)
-        if r.status_code == 200:
-            suggestions = r.json().get("response", {}).get("suggestions", [])
-            for item in suggestions:
-                if item.get("type") == "team":
-                    name = item.get("teamName") or item.get("name", "")
-                    if name.lower() == team_name.lower():
-                        return {"id": item.get("teamId") or item.get("id"), "name": name}
-            for item in suggestions:
-                if item.get("type") == "team":
-                    return {"id": item.get("teamId") or item.get("id"),
-                            "name": item.get("teamName") or item.get("name", team_name)}
-    except Exception as e:
-        print(f"[search_team] {e}")
-    return {}
-
-
-def find_upcoming_match(team1_id: int, team2_id: int) -> dict:
-    try:
-        url = f"{RAPIDAPI_BASE}/football-get-fixtures-between-teams?firstTeamId={team1_id}&secondTeamId={team2_id}"
-        r = requests.get(url, headers=RAPIDAPI_HEADERS, timeout=15)
+        url = f"{SOFA_BASE}/search"
+        params = {"q": team_name, "type": "teams", "page": "0"}
+        r = requests.get(url, headers=HEADERS, params=params, timeout=15)
         if r.status_code != 200:
+            print(f"[search_team] HTTP {r.status_code} for {team_name}")
             return {}
-        matches = r.json().get("response", {}).get("fixtures", [])
-        now = datetime.utcnow()
-        best, best_delta = None, timedelta(days=999)
-        for m in matches:
-            if m.get("status") == "FT":
+        
+        results = r.json().get("results", [])
+        # Берём только футбольные команды (sport.id == 1)
+        football_teams = []
+        for item in results:
+            if item.get("type") != "team":
                 continue
-            try:
-                m_date = datetime.fromisoformat(m.get("date", "").replace("Z", "+00:00")).replace(tzinfo=None)
-            except Exception:
-                continue
-            delta = m_date - now
-            if delta > timedelta(hours=-3) and abs(delta) < best_delta:
-                best, best_delta = m, abs(delta)
-        return best or {}
+            entity = item.get("entity", {})
+            sport = entity.get("sport", {})
+            if sport.get("id") == 1 or sport.get("slug") == "football":
+                football_teams.append(entity)
+        
+        if not football_teams:
+            return {}
+        
+        # Ищем точное совпадение (англ или русск)
+        for team in football_teams:
+            if team.get("name", "").lower() == team_name.lower():
+                return {"id": team.get("id"), "name": team.get("name")}
+            ru = team.get("fieldTranslations", {}).get("nameTranslation", {}).get("ru", "")
+            if ru.lower() == team_name.lower():
+                return {"id": team.get("id"), "name": team.get("name")}
+        
+        # Иначе первый по score
+        first = football_teams[0]
+        return {"id": first.get("id"), "name": first.get("name")}
     except Exception as e:
-        print(f"[find_upcoming] {e}")
-    return {}
+        print(f"[search_team] {team_name}: {e}")
+        return {}
 
 
-def get_team_recent_matches(team_id: int, team_name: str) -> str:
+# ============================================================
+# ПОСЛЕДНИЕ МАТЧИ КОМАНДЫ
+# ============================================================
+def get_team_last_matches(team_id: int, team_name: str) -> str:
+    """Форма команды за последние матчи."""
     try:
-        url = f"{RAPIDAPI_BASE}/football-get-all-fixtures-by-teamid?teamid={team_id}&page=1"
-        r = requests.get(url, headers=RAPIDAPI_HEADERS, timeout=15)
+        url = f"{SOFA_BASE}/teams/get-last-matches"
+        params = {"teamId": str(team_id), "page": "0"}
+        r = requests.get(url, headers=HEADERS, params=params, timeout=15)
         if r.status_code != 200:
-            return f"\nДанные по {team_name} недоступны\n"
-        matches = r.json().get("response", {}).get("fixtures", [])
-        finished = [m for m in matches if m.get("status") == "FT"][-7:]
-        if not finished:
-            return f"\nНет матчей {team_name}\n"
+            return f"\nДанные по {team_name} недоступны (HTTP {r.status_code})\n"
+        
+        data = r.json()
+        events = data.get("events", [])[:7]
+        if not events:
+            return f"\nНет последних матчей для {team_name}\n"
+        
         result = f"\nПОСЛЕДНИЕ МАТЧИ {team_name.upper()}:\n"
         gs, gc, w, d, l = [], [], 0, 0, 0
-        for m in finished:
-            home = m.get("homeTeam", {}).get("name", "?")
-            away = m.get("awayTeam", {}).get("name", "?")
-            hs, as_ = m.get("homeGoals"), m.get("awayGoals")
-            date = m.get("date", "")[:10]
-            if hs is not None and as_ is not None:
-                venue = "(д)" if m.get("homeTeam", {}).get("id") == team_id else "(в)"
-                result += f"  {date} {venue}: {home} {hs}:{as_} {away}\n"
-                is_home = m.get("homeTeam", {}).get("id") == team_id
-                scored, conceded = (hs, as_) if is_home else (as_, hs)
-                gs.append(scored); gc.append(conceded)
-                if scored > conceded: w += 1
-                elif scored == conceded: d += 1
-                else: l += 1
+        
+        for m in events:
+            home = m.get("homeTeam", {})
+            away = m.get("awayTeam", {})
+            home_name = home.get("name", "?")
+            away_name = away.get("name", "?")
+            hs = m.get("homeScore", {}).get("current")
+            as_ = m.get("awayScore", {}).get("current")
+            ts = m.get("startTimestamp", 0)
+            date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
+            
+            if hs is None or as_ is None:
+                continue
+            
+            is_home = home.get("id") == team_id
+            venue = "(д)" if is_home else "(в)"
+            result += f"  {date} {venue}: {home_name} {hs}:{as_} {away_name}\n"
+            scored, conceded = (hs, as_) if is_home else (as_, hs)
+            gs.append(scored); gc.append(conceded)
+            if scored > conceded: w += 1
+            elif scored == conceded: d += 1
+            else: l += 1
+        
         if gs:
             avg_s, avg_c = sum(gs)/len(gs), sum(gc)/len(gc)
             btts = sum(1 for i in range(len(gs)) if gs[i] > 0 and gc[i] > 0)
@@ -106,23 +118,56 @@ def get_team_recent_matches(team_id: int, team_name: str) -> str:
         return f"\nОшибка {team_name}: {e}\n"
 
 
-def get_h2h_text(team1_id: int, team2_id: int) -> str:
+# ============================================================
+# БЛИЖАЙШИЙ МАТЧ КОМАНДЫ
+# ============================================================
+def get_next_match(team_id: int, opponent_id: int) -> dict:
+    """Ищет ближайший матч команды против конкретного соперника."""
     try:
-        url = f"{RAPIDAPI_BASE}/football-get-fixtures-between-teams?firstTeamId={team1_id}&secondTeamId={team2_id}"
-        r = requests.get(url, headers=RAPIDAPI_HEADERS, timeout=15)
+        url = f"{SOFA_BASE}/teams/get-next-matches"
+        params = {"teamId": str(team_id), "page": "0"}
+        r = requests.get(url, headers=HEADERS, params=params, timeout=15)
+        if r.status_code != 200:
+            return {}
+        
+        events = r.json().get("events", [])
+        for m in events:
+            home_id = m.get("homeTeam", {}).get("id")
+            away_id = m.get("awayTeam", {}).get("id")
+            if opponent_id in (home_id, away_id):
+                return m
+        return {}
+    except Exception as e:
+        print(f"[get_next_match] {e}")
+        return {}
+
+
+# ============================================================
+# H2H
+# ============================================================
+def get_h2h_text(match_id: int) -> str:
+    """История личных встреч через matches/get-h2h-events."""
+    try:
+        url = f"{SOFA_BASE}/matches/get-h2h-events"
+        params = {"matchId": str(match_id)}
+        r = requests.get(url, headers=HEADERS, params=params, timeout=15)
         if r.status_code != 200:
             return "\nH2H недоступно\n"
-        matches = r.json().get("response", {}).get("fixtures", [])
-        finished = [m for m in matches if m.get("status") == "FT"][:5]
-        if not finished:
-            return "\nЛичных встреч нет\n"
-        result = f"\nЛИЧНЫЕ ВСТРЕЧИ ({len(finished)}):\n"
+        
+        events = r.json().get("events", [])[:5]
+        if not events:
+            return "\nЛичных встреч не найдено\n"
+        
+        result = f"\nЛИЧНЫЕ ВСТРЕЧИ ({len(events)}):\n"
         totals = []
-        for m in finished:
+        for m in events:
             home = m.get("homeTeam", {}).get("name", "?")
             away = m.get("awayTeam", {}).get("name", "?")
-            hs, as_ = m.get("homeGoals", 0) or 0, m.get("awayGoals", 0) or 0
-            result += f"  {m.get('date', '')[:10]}: {home} {hs}:{as_} {away}\n"
+            hs = m.get("homeScore", {}).get("current") or 0
+            as_ = m.get("awayScore", {}).get("current") or 0
+            ts = m.get("startTimestamp", 0)
+            date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
+            result += f"  {date}: {home} {hs}:{as_} {away}\n"
             totals.append(hs + as_)
         if totals:
             result += f"  Средний тотал H2H: {sum(totals)/len(totals):.1f}\n"
@@ -131,173 +176,261 @@ def get_h2h_text(team1_id: int, team2_id: int) -> str:
         return "\nH2H недоступно\n"
 
 
-def get_lineups(match_id) -> str:
+# ============================================================
+# ДЕТАЛИ МАТЧА (судья, стадион)
+# ============================================================
+def get_match_detail(match_id: int) -> dict:
+    """Детали матча: судья, стадион, и т.д."""
     try:
-        url = f"{RAPIDAPI_BASE}/football-get-lineups-by-matchid?matchid={match_id}"
-        r = requests.get(url, headers=RAPIDAPI_HEADERS, timeout=15)
+        url = f"{SOFA_BASE}/matches/detail"
+        params = {"matchId": str(match_id)}
+        r = requests.get(url, headers=HEADERS, params=params, timeout=15)
         if r.status_code != 200:
-            return "\n[!] Составы ещё не опубликованы\n"
-        data = r.json().get("response", {})
-        lineups = data.get("lineups", [])
-        if not lineups:
-            return "\n[!] Составы ещё не опубликованы\n"
+            return {}
+        return r.json().get("event", {})
+    except Exception:
+        return {}
+
+
+# ============================================================
+# СОСТАВЫ
+# ============================================================
+def get_lineups(match_id: int) -> str:
+    try:
+        url = f"{SOFA_BASE}/matches/get-lineups"
+        params = {"matchId": str(match_id)}
+        r = requests.get(url, headers=HEADERS, params=params, timeout=15)
+        if r.status_code != 200:
+            return "\n[!] Составы ещё не опубликованы (обычно за 30-60 мин до матча)\n"
+        
+        data = r.json()
+        if data.get("confirmed") is False:
+            return "\n[!] Составы ещё не подтверждены\n"
+        
+        home = data.get("home", {})
+        away = data.get("away", {})
+        
+        if not home and not away:
+            return "\n[!] Составы недоступны\n"
+        
         result = "\n=== СТАРТОВЫЕ СОСТАВЫ ===\n"
-        for team in lineups[:2]:
-            tname = team.get("teamName", "?")
-            formation = team.get("formation", "?")
-            starters = team.get("starters", []) or team.get("startXI", [])
-            result += f"\n{tname} ({formation}):\n"
+        for team_data, label in [(home, "Хозяева"), (away, "Гости")]:
+            formation = team_data.get("formation", "?")
+            players = team_data.get("players", [])
+            starters = [p for p in players if not p.get("substitute", False)]
+            missing = [p for p in players if p.get("substitute", False) is False and p.get("missingType")]
+            
+            result += f"\n{label} ({formation}):\n"
             for p in starters[:11]:
-                pname = p.get("name") or p.get("playerName", "?")
+                pi = p.get("player", {})
+                name = pi.get("name", "?")
                 pos = p.get("position", "")
-                result += f"  • {pname} ({pos})\n"
-        missing = data.get("missingPlayers", []) or data.get("injuries", [])
-        if missing:
-            result += "\nТРАВМЫ/ДИСКВ.:\n"
-            for p in missing[:10]:
-                pname = p.get("name") or p.get("playerName", "?")
-                reason = p.get("reason", "травма")
-                result += f"  ✗ {pname} ({reason})\n"
+                result += f"  • {name} ({pos})\n"
+            
+            # Травмы
+            missing_list = team_data.get("missingPlayers", []) or []
+            if missing_list:
+                result += f"  Травмы/диск.:\n"
+                for mp in missing_list[:5]:
+                    mname = mp.get("player", {}).get("name", "?")
+                    reason = mp.get("type", "?")
+                    result += f"    ✗ {mname} ({reason})\n"
+        
         return result
     except Exception as e:
         return f"\nОшибка составов: {e}\n"
 
 
-def get_referee_info(match_data: dict) -> str:
-    referee = match_data.get("referee") or match_data.get("officials", {}).get("referee", "")
+# ============================================================
+# СУДЬЯ
+# ============================================================
+def get_referee_info(match_detail: dict) -> str:
+    referee = match_detail.get("referee", {})
     if isinstance(referee, dict):
-        referee = referee.get("name", "")
-    if not referee:
+        ref_name = referee.get("name", "")
+    else:
+        ref_name = str(referee) if referee else ""
+    
+    if not ref_name:
         return "\n[!] Судья не назначен\n"
-    result = f"\n=== СУДЬЯ: {referee} ===\n"
+    
+    result = f"\n=== СУДЬЯ: {ref_name} ===\n"
+    
+    # Sofascore сам даёт статистику судьи в детали матча
+    if isinstance(referee, dict):
+        yc = referee.get("yellowCards")
+        rc = referee.get("redCards")
+        games = referee.get("games")
+        if games:
+            result += f"  Матчей: {games}\n"
+        if yc is not None:
+            avg_yc = (yc / games) if games else 0
+            result += f"  Жёлтых: {yc} ({avg_yc:.1f}/матч)\n"
+        if rc is not None:
+            result += f"  Красных: {rc}\n"
+    
+    # Доп. поиск через Tavily для полноты
     if TAVILY_KEY:
         try:
             payload = {"api_key": TAVILY_KEY,
-                       "query": f"{referee} football referee yellow cards per game statistics",
-                       "search_depth": "basic", "max_results": 3}
+                       "query": f"{ref_name} football referee yellow cards average",
+                       "search_depth": "basic", "max_results": 2}
             r = requests.post(TAVILY_URL, json=payload, timeout=15)
             if r.status_code == 200:
-                snippets = [item.get("content", "")[:300] for item in r.json().get("results", [])[:3]]
+                snippets = [item.get("content", "")[:250] for item in r.json().get("results", [])[:2]]
                 snippets = [s for s in snippets if s]
                 if snippets:
-                    result += "Инфа из веба:\n"
+                    result += "Из веба:\n"
                     for s in snippets:
                         result += f"  • {s}\n"
-                else:
-                    result += "Статистика не найдена\n"
-        except Exception as e:
-            result += f"Ошибка поиска: {e}\n"
-    else:
-        result += "[Tavily не подключён]\n"
+        except Exception:
+            pass
+    
     return result
 
 
+# ============================================================
+# ПОГОДА
+# ============================================================
 def get_weather(city: str) -> str:
     if not OPENWEATHER_KEY or not city:
         return ""
     try:
-        url = f"https://api.openweathermap.org/data/2.5/weather?q={requests.utils.quote(city)}&appid={OPENWEATHER_KEY}&units=metric&lang=ru"
-        r = requests.get(url, timeout=10)
+        url = f"https://api.openweathermap.org/data/2.5/weather"
+        params = {"q": city, "appid": OPENWEATHER_KEY, "units": "metric", "lang": "ru"}
+        r = requests.get(url, params=params, timeout=10)
         if r.status_code != 200:
-            return f"\n[!] Погода {city} недоступна\n"
+            return f"\n[!] Погода для {city} недоступна\n"
         d = r.json()
         temp = d.get("main", {}).get("temp")
         feels = d.get("main", {}).get("feels_like")
         wind = d.get("wind", {}).get("speed")
         desc = d.get("weather", [{}])[0].get("description", "")
         humidity = d.get("main", {}).get("humidity")
+        
         result = f"\n=== ПОГОДА в {city} ===\n"
         result += f"  {desc.capitalize()} | {temp}°C (ощущ. {feels}°C)\n"
         result += f"  Ветер: {wind} м/с | Влажность: {humidity}%\n"
+        
         warnings = []
         if isinstance(wind, (int, float)) and wind > 8:
-            warnings.append("сильный ветер — снижает дальние удары/навесы")
+            warnings.append("сильный ветер")
         if isinstance(temp, (int, float)):
-            if temp < 3: warnings.append("холодно — выгоднее физически сильным")
-            elif temp > 28: warnings.append("жара — спад во 2 тайме")
-        if "rain" in desc.lower() or "дожд" in desc.lower():
-            warnings.append("дождь — мокрое поле, ошибки")
-        if "snow" in desc.lower() or "снег" in desc.lower():
-            warnings.append("снег — нестандарт")
+            if temp < 3: warnings.append("холодно")
+            elif temp > 28: warnings.append("жара")
+        if "дожд" in desc.lower() or "rain" in desc.lower():
+            warnings.append("дождь")
         if warnings:
-            result += "  ⚠ " + "; ".join(warnings) + "\n"
+            result += "  ⚠ " + ", ".join(warnings) + "\n"
         return result
     except Exception as e:
         return f"\n[!] Погода: {e}\n"
 
 
+# ============================================================
+# СБОР ВСЕХ ДАННЫХ
+# ============================================================
 def gather_all_data(team1_name: str, team2_name: str) -> tuple[str, dict]:
     info = "=== ДАННЫЕ МАТЧА ===\n"
-    quality = {"team_stats": False, "lineups": False, "referee": False, "weather": False}
+    quality = {"team_stats": False, "lineups": False, "referee": False, "weather": False, "h2h": False}
+    
     team1 = search_team(team1_name)
     team2 = search_team(team2_name)
+    
+    # Базовая форма
     if team1.get("id"):
-        info += get_team_recent_matches(team1["id"], team1.get("name", team1_name))
+        info += get_team_last_matches(team1["id"], team1.get("name", team1_name))
         quality["team_stats"] = True
     else:
-        info += f"\n[!] '{team1_name}' не найдена\n"
+        info += f"\n[!] '{team1_name}' не найдена в Sofascore\n"
+    
     if team2.get("id"):
-        info += get_team_recent_matches(team2["id"], team2.get("name", team2_name))
+        info += get_team_last_matches(team2["id"], team2.get("name", team2_name))
         quality["team_stats"] = True
     else:
-        info += f"\n[!] '{team2_name}' не найдена\n"
-    match_data = {}
+        info += f"\n[!] '{team2_name}' не найдена в Sofascore\n"
+    
+    # Ищем матч и подгружаем составы/судью/погоду
     if team1.get("id") and team2.get("id"):
-        info += get_h2h_text(team1["id"], team2["id"])
-        match_data = find_upcoming_match(team1["id"], team2["id"])
-    if match_data:
-        match_id = match_data.get("id") or match_data.get("matchId")
-        venue = match_data.get("venue", {})
-        city = venue.get("city", "") or venue.get("name", "") if isinstance(venue, dict) else ""
-        info += f"\n=== МАТЧ НАЙДЕН ===\nДата: {match_data.get('date', '')}\n"
-        info += f"Стадион: {venue if isinstance(venue, str) else venue.get('name', '?')}\n"
-        if match_id:
-            l = get_lineups(match_id)
-            info += l
-            if "[!]" not in l: quality["lineups"] = True
-        ri = get_referee_info(match_data)
-        info += ri
-        if "[!]" not in ri: quality["referee"] = True
-        if city:
-            w = get_weather(city)
-            info += w
-            if w and "[!]" not in w: quality["weather"] = True
-    else:
-        info += "\n[!] Предстоящий матч не найден — составы/судья/погода пропущены\n"
+        match = get_next_match(team1["id"], team2["id"])
+        if match:
+            match_id = match.get("id")
+            ts = match.get("startTimestamp", 0)
+            date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "?"
+            venue = match.get("venue", {})
+            stadium = venue.get("stadium", {}).get("name", "?") if isinstance(venue, dict) else "?"
+            city = ""
+            if isinstance(venue, dict):
+                city_info = venue.get("city", {})
+                city = city_info.get("name", "") if isinstance(city_info, dict) else str(city_info or "")
+            
+            info += f"\n=== МАТЧ НАЙДЕН ===\nДата: {date} UTC\nСтадион: {stadium}\nГород: {city}\n"
+            
+            # H2H
+            h2h = get_h2h_text(match_id)
+            info += h2h
+            if "не найдено" not in h2h and "недоступно" not in h2h:
+                quality["h2h"] = True
+            
+            # Детали (судья)
+            detail = get_match_detail(match_id)
+            ref = get_referee_info(detail)
+            info += ref
+            if "[!]" not in ref:
+                quality["referee"] = True
+            
+            # Составы
+            lineups = get_lineups(match_id)
+            info += lineups
+            if "[!]" not in lineups:
+                quality["lineups"] = True
+            
+            # Погода
+            if city:
+                w = get_weather(city)
+                info += w
+                if w and "[!]" not in w:
+                    quality["weather"] = True
+        else:
+            info += "\n[!] Ближайший матч между командами не найден\n"
+    
     return info, quality
 
 
-SYSTEM_PROMPT = """Ты профессиональный футбольный аналитик. Работаешь СТРОГО с данными.
+# ============================================================
+# ПРОМПТ
+# ============================================================
+SYSTEM_PROMPT = """Ты профессиональный футбольный аналитик. Работаешь СТРОГО с предоставленными данными.
 
 ПРИОРИТЕТЫ:
-1. СОСТАВЫ — отсутствие ключевых игроков меняет прогноз сильнее всего
-2. ФОРМА последних матчей (среднее голов, ОЗ, ТБ2.5)
-3. ЛИЧНЫЕ ВСТРЕЧИ — характер матчей
-4. ПОГОДА — ветер >8 м/с снижает тотал; дождь = больше ошибок; жара = спад во 2 тайме
-5. СУДЬЯ — если есть данные про карточки
-6. ДОМ/ВЫЕЗД — +0.3 голу дома обычно
+1. СОСТАВЫ — отсутствие лидеров меняет прогноз
+2. ФОРМА (среднее голов, ОЗ, ТБ2.5)
+3. H2H — характер матчей
+4. ПОГОДА — ветер >8 м/с снижает тотал; дождь = ошибки; жара = спад во 2 тайме
+5. СУДЬЯ — если есть стата карточек
+6. ДОМ/ВЫЕЗД — +0.3 голу дома
 
 ПРАВИЛА:
 - [!] = данных нет → уверенность 40-50%
 - Без составов — прогноз "предварительный"
 - НЕ выдумывай. Только данные
-- 70%+ уверенность ТОЛЬКО при явном перевесе в цифрах
+- 70%+ ТОЛЬКО при явном перевесе в цифрах
 - Угловые/карточки ≤55%
 
 ФОРМАТ:
 
 МАТЧ: [К1] vs [К2]
-КАЧЕСТВО ДАННЫХ: [Высокое/Среднее/Низкое] (✓составы ✓погода ✓судья ✓форма)
+КАЧЕСТВО ДАННЫХ: [Высокое/Среднее/Низкое]
 
 КЛЮЧЕВЫЕ ФАКТОРЫ:
-- [3-5 пунктов из данных]
+- [3-5 пунктов]
 
 АНАЛИЗ СОСТАВОВ:
-[Кто отсутствует, как влияет. Если нет — "не опубликованы"]
+[Кто отсутствует, как влияет]
 
-ПОГОДА: [1-2 предл., если нет — пропусти]
+ПОГОДА: [1-2 предложения]
 
-СУДЬЯ: [Имя + что известно]
+СУДЬЯ: [Имя + стата если есть]
 
 ЦИФРЫ:
 - Средний тотал: К1 X.X | К2 X.X
@@ -333,7 +466,7 @@ def analyze_sync(match_name: str) -> str:
         return "Формат: Команда1 vs Команда2"
 
     info, quality = gather_all_data(team1, team2)
-    qs = f"\n[Качество: форма={quality['team_stats']}, составы={quality['lineups']}, судья={quality['referee']}, погода={quality['weather']}]"
+    qs = f"\n[Качество: форма={quality['team_stats']}, H2H={quality['h2h']}, составы={quality['lineups']}, судья={quality['referee']}, погода={quality['weather']}]"
 
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
@@ -357,23 +490,22 @@ def analyze_sync(match_name: str) -> str:
         return f"Ошибка: {e}"
 
 
-async def analyze(match_name: str) -> str:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, analyze_sync, match_name)
-
-
+# ============================================================
+# TELEGRAM
+# ============================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "⚽ AI Football Analyst v3\n\n"
-        "Напиши: Команда1 vs Команда2\n\n"
+        "⚽ AI Football Analyst v4 (Sofascore)\n\n"
+        "Напиши: Команда1 vs Команда2\n"
+        "Можно по-русски и по-английски!\n\n"
         "Учитываю:\n"
-        "📊 Форму 7 матчей | 👥 Составы | 🤕 Травмы\n"
-        "👨‍⚖️ Судья | 🌦 Погода | 📈 H2H\n\n"
-        "Лучше всего: за 30-60 мин до матча."
+        "📊 Форма 7 матчей | 👥 Составы | 🤕 Травмы\n"
+        "👨‍⚖️ Судья со статой | 🌦 Погода | 📈 H2H\n\n"
+        "Лучше за 30-60 мин до матча."
     )
 
 async def example_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Manchester City vs Liverpool\nReal Madrid vs Barcelona")
+    await update.message.reply_text("Реал Мадрид vs Барселона\nManchester City vs Liverpool")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -390,7 +522,11 @@ async def analyze_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loading = await update.message.reply_text(
         f"🔍 {match_name}\n📊 Форма...\n👥 Составы...\n🌦 Погода...\n👨‍⚖️ Судья...\n⏱ 25-40 сек"
     )
-    result = await analyze(match_name)
+    
+    import asyncio
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, analyze_sync, match_name)
+    
     try: await loading.delete()
     except: pass
     if len(result) > 4000:
@@ -406,8 +542,8 @@ def main():
     if not all([TELEGRAM_BOT_TOKEN, GROQ_API_KEY, RAPIDAPI_KEY]):
         print("❌ Нет TELEGRAM_BOT_TOKEN/GROQ_API_KEY/RAPIDAPI_KEY")
         return
-    if not OPENWEATHER_KEY: print("⚠ OPENWEATHER_KEY не задан — погода пропущена")
-    if not TAVILY_KEY: print("⚠ TAVILY_KEY не задан — судья пропущен")
+    if not OPENWEATHER_KEY: print("⚠ OPENWEATHER_KEY не задан")
+    if not TAVILY_KEY: print("⚠ TAVILY_KEY не задан")
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("example", example_command))
