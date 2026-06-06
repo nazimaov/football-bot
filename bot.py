@@ -135,31 +135,82 @@ def get_next_match(team_id: int, opponent_id: int) -> dict:
         return {}
 
 
+def split_teams(text: str) -> tuple[str, str]:
+    """Умное разделение строки на две команды.
+    Поддерживает: vs, -, –, —, /, |, x, против, и (даже без разделителя через поиск)."""
+    text = text.strip()
+    # Сначала пробуем явные разделители
+    separators = [" vs ", " VS ", " v ", " против ", " - ", " – ", " — ", " / ", " | ", " x ", " X "]
+    for sep in separators:
+        if sep in text:
+            parts = text.split(sep, 1)
+            return parts[0].strip(), parts[1].strip()
+    # Дефис без пробелов: "ямайка-юар"
+    for sep in ["-", "–", "—", "/", "|"]:
+        if sep in text:
+            parts = text.split(sep, 1)
+            t1, t2 = parts[0].strip(), parts[1].strip()
+            if t1 and t2:
+                return t1, t2
+    # Нет разделителя — пробуем разделить пополам и проверить поиском
+    words = text.split()
+    if len(words) >= 2:
+        # Пробуем все варианты разделения и берём тот где обе части находятся
+        best = None
+        for i in range(1, len(words)):
+            t1 = " ".join(words[:i])
+            t2 = " ".join(words[i:])
+            r1 = search_team(t1)
+            r2 = search_team(t2)
+            if r1.get("id") and r2.get("id"):
+                # обе нашлись — возвращаем сразу
+                return t1, t2
+            if not best and (r1.get("id") or r2.get("id")):
+                best = (t1, t2)
+        if best:
+            return best
+        # Fallback: пополам
+        mid = len(words) // 2
+        return " ".join(words[:mid]), " ".join(words[mid:])
+    return text, ""
+
+
 def get_h2h_text(match_id: int) -> str:
     try:
         url = f"{SOFA_BASE}/matches/get-h2h-events"
         params = {"matchId": str(match_id)}
         r = requests.get(url, headers=HEADERS, params=params, timeout=15)
-        if r.status_code != 200:
-            return "\nH2H недоступно\n"
-        events = r.json().get("events", [])[:5]
-        if not events:
-            return "\nЛичных встреч не найдено\n"
-        result = f"\nЛИЧНЫЕ ВСТРЕЧИ ({len(events)}):\n"
-        totals = []
-        for m in events:
-            home = m.get("homeTeam", {}).get("name", "?")
-            away = m.get("awayTeam", {}).get("name", "?")
-            hs = m.get("homeScore", {}).get("current") or 0
-            as_ = m.get("awayScore", {}).get("current") or 0
-            ts = m.get("startTimestamp", 0)
-            date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
-            result += f"  {date}: {home} {hs}:{as_} {away}\n"
-            totals.append(hs + as_)
-        if totals:
-            result += f"  Средний тотал H2H: {sum(totals)/len(totals):.1f}\n"
-        return result
-    except Exception:
+        # DEBUG
+        print(f"[DEBUG H2H] status={r.status_code}")
+        if r.status_code == 200:
+            data = r.json()
+            print(f"[DEBUG H2H] top keys: {list(data.keys())}")
+            # Пробуем разные пути к событиям
+            events = data.get("events") or data.get("h2h", {}).get("events") or data.get("managerDuel", {}).get("events") or []
+            if isinstance(events, list):
+                events = events[:5]
+            print(f"[DEBUG H2H] events count: {len(events) if isinstance(events, list) else 'not list'}")
+            if not events:
+                return "\nЛичных встреч не найдено\n"
+            result = f"\nЛИЧНЫЕ ВСТРЕЧИ ({len(events)}):\n"
+            totals = []
+            for m in events:
+                home = m.get("homeTeam", {}).get("name", "?")
+                away = m.get("awayTeam", {}).get("name", "?")
+                hs = (m.get("homeScore") or {}).get("current") if isinstance(m.get("homeScore"), dict) else m.get("homeScore", 0)
+                as_ = (m.get("awayScore") or {}).get("current") if isinstance(m.get("awayScore"), dict) else m.get("awayScore", 0)
+                hs = hs or 0
+                as_ = as_ or 0
+                ts = m.get("startTimestamp", 0)
+                date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
+                result += f"  {date}: {home} {hs}:{as_} {away}\n"
+                totals.append(hs + as_)
+            if totals:
+                result += f"  Средний тотал H2H: {sum(totals)/len(totals):.1f}\n"
+            return result
+        return "\nH2H недоступно\n"
+    except Exception as e:
+        print(f"[DEBUG H2H] error: {e}")
         return "\nH2H недоступно\n"
 
 
@@ -461,15 +512,9 @@ SYSTEM_PROMPT = """Ты профессиональный футбольный а
 
 
 def analyze_sync(match_name: str) -> str:
-    separators = [" vs ", " - ", " VS ", " v ", " против "]
-    team1, team2 = match_name, ""
-    for sep in separators:
-        if sep in match_name:
-            parts = match_name.split(sep, 1)
-            team1, team2 = parts[0].strip(), parts[1].strip()
-            break
+    team1, team2 = split_teams(match_name)
     if not team2:
-        return "Формат: Команда1 vs Команда2"
+        return "Напиши две команды. Например: Реал Мадрид - Барселона"
     info, quality = gather_all_data(team1, team2)
     qs = f"\n[Качество: форма={quality['team_stats']}, H2H={quality['h2h']}, составы={quality['lineups']}, судья={quality['referee']}, погода={quality['weather']}]"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -496,8 +541,12 @@ def analyze_sync(match_name: str) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "⚽ AI Football Analyst v5\n\nНапиши: Команда1 vs Команда2\n"
-        "Можно по-русски и по-английски!\n\n"
+        "⚽ AI Football Analyst v7\n\n"
+        "Просто напиши две команды любым способом:\n"
+        "• Реал Мадрид vs Барселона\n"
+        "• Ямайка - Южная Африка\n"
+        "• Manchester City Liverpool\n"
+        "• Бавария / Дортмунд\n\n"
         "📊 Форма | 👥 Составы | 🤕 Травмы\n"
         "👨‍⚖️ Судья | 🌦 Погода | 📈 H2H\n\n"
         "Лучше за 30-60 мин до матча."
