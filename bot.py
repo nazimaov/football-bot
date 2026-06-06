@@ -278,6 +278,58 @@ def get_weather(city: str) -> str:
         return f"\n[!] Погода: {e}\n"
 
 
+def extract_venue_city(*sources) -> tuple[str, str]:
+    """Ищет stadium и city во всех возможных местах. Возвращает (stadium, city)."""
+    stadium = ""
+    city = ""
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        # Пробуем разные пути к venue
+        venue = src.get("venue") or src.get("stadium") or {}
+        if isinstance(venue, dict):
+            # stadium name
+            if not stadium:
+                stadium = (venue.get("name") or 
+                           (venue.get("stadium") or {}).get("name", "") if isinstance(venue.get("stadium"), dict) else venue.get("stadium", "") or
+                           "")
+            # city
+            if not city:
+                c = venue.get("city")
+                if isinstance(c, dict):
+                    city = c.get("name", "")
+                elif isinstance(c, str):
+                    city = c
+                if not city:
+                    city = venue.get("cityName", "") or ""
+                # Иногда город в country
+                if not city:
+                    country = venue.get("country", {})
+                    if isinstance(country, dict):
+                        city = country.get("name", "")
+        # Город может быть прямо в матче
+        if not city:
+            c = src.get("city") or src.get("cityName")
+            if isinstance(c, dict):
+                city = c.get("name", "")
+            elif isinstance(c, str):
+                city = c
+    return stadium, city
+
+
+def extract_referee(*sources) -> tuple[str, dict]:
+    """Ищет судью во всех возможных местах."""
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        ref = src.get("referee")
+        if isinstance(ref, dict) and ref.get("name"):
+            return ref.get("name"), ref
+        if isinstance(ref, str) and ref:
+            return ref, {}
+    return "", {}
+
+
 def gather_all_data(team1_name: str, team2_name: str) -> tuple[str, dict]:
     info = "=== ДАННЫЕ МАТЧА ===\n"
     quality = {"team_stats": False, "lineups": False, "referee": False, "weather": False, "h2h": False}
@@ -299,33 +351,63 @@ def gather_all_data(team1_name: str, team2_name: str) -> tuple[str, dict]:
             match_id = match.get("id")
             ts = match.get("startTimestamp", 0)
             date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "?"
-            venue = match.get("venue", {})
-            stadium = venue.get("stadium", {}).get("name", "?") if isinstance(venue, dict) else "?"
-            city = ""
-            if isinstance(venue, dict):
-                city_info = venue.get("city", {})
-                city = city_info.get("name", "") if isinstance(city_info, dict) else str(city_info or "")
-            info += f"\n=== МАТЧ НАЙДЕН ===\nДата: {date} UTC\nСтадион: {stadium}\nГород: {city}\n"
+            
+            # Берём детали матча — там обычно больше инфы
+            detail = get_match_detail(match_id) or {}
+            
+            # ЛОГИРУЕМ в Render что вернул API (видно в logs)
+            print(f"[DEBUG] match keys: {list(match.keys())}")
+            print(f"[DEBUG] detail keys: {list(detail.keys())}")
+            print(f"[DEBUG] match.venue: {match.get('venue')}")
+            print(f"[DEBUG] detail.venue: {detail.get('venue')}")
+            print(f"[DEBUG] match.referee: {match.get('referee')}")
+            print(f"[DEBUG] detail.referee: {detail.get('referee')}")
+            
+            # Ищем стадион и город во ВСЕХ возможных местах
+            stadium, city = extract_venue_city(match, detail)
+            if not stadium: stadium = "?"
+            
+            info += f"\n=== МАТЧ НАЙДЕН ===\nДата: {date} UTC\nСтадион: {stadium}\nГород: {city or '(не указан)'}\n"
+            
+            # H2H
             h2h = get_h2h_text(match_id)
             info += h2h
             if "не найдено" not in h2h and "недоступно" not in h2h:
                 quality["h2h"] = True
-            detail = get_match_detail(match_id)
-            ref = get_referee_info(detail)
-            info += ref
-            if "[!]" not in ref:
+            
+            # Судья — ищем во всех источниках
+            ref_name, ref_data = extract_referee(match, detail)
+            if ref_name:
+                ref_text = f"\n=== СУДЬЯ: {ref_name} ===\n"
+                if ref_data:
+                    yc = ref_data.get("yellowCards")
+                    rc = ref_data.get("redCards")
+                    games = ref_data.get("games")
+                    if games: ref_text += f"  Матчей: {games}\n"
+                    if yc is not None and games:
+                        ref_text += f"  Жёлтых: {yc} ({yc/games:.1f}/матч)\n"
+                    if rc is not None: ref_text += f"  Красных: {rc}\n"
+                info += ref_text
                 quality["referee"] = True
+            else:
+                info += "\n[!] Судья не назначен или не указан в API\n"
+            
+            # Составы
             lineups = get_lineups(match_id)
             info += lineups
             if "[!]" not in lineups:
                 quality["lineups"] = True
+            
+            # Погода — пробуем найти даже если city пустой
             if city:
                 w = get_weather(city)
                 info += w
                 if w and "[!]" not in w:
                     quality["weather"] = True
+            else:
+                info += "\n[!] Город не определён, погода пропущена\n"
         else:
-            info += "\n[!] Ближайший матч не найден\n"
+            info += "\n[!] Ближайший матч не найден через get-next-matches\n"
     return info, quality
 
 
