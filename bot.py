@@ -402,7 +402,7 @@ async def analyze_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Готово!", reply_markup=InlineKeyboardMarkup(kb))
 
 
-async def main():
+def main():
     if not all([TELEGRAM_BOT_TOKEN, GROQ_API_KEY, RAPIDAPI_KEY]):
         print("❌ Нет TELEGRAM_BOT_TOKEN/GROQ_API_KEY/RAPIDAPI_KEY")
         return
@@ -414,7 +414,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze_message))
     print("✅ Бот работает!")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
