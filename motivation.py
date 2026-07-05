@@ -1,7 +1,19 @@
-"""Турнирная мотивация команд (борьба за титул/еврокубки/выживание). Заготовка."""
+"""Турнирная мотивация команды на основе её положения в турнирной таблице."""
 
 
-def get_motivation(team1_id: int | None, team2_id: int | None) -> dict:
-    """Вернуть оценку турнирной мотивации команд перед матчем.
-    Пока не реализовано — возвращает пустую структуру."""
-    return {}
+def get_motivation(row: dict, total_teams: int) -> str:
+    """Возвращает текстовую оценку турнирной мотивации по строке standings.get_standings.
+    '' если строка/таблица недоступна."""
+    if not row or not total_teams:
+        return ""
+    position = row.get("position")
+    if position is None:
+        return ""
+    zone = row.get("promotion", {}).get("text", "")
+    if zone:
+        return f"место {position}/{total_teams}, борьба за {zone}"
+    if position <= 3:
+        return f"место {position}/{total_teams}, борьба за чемпионство"
+    if position > total_teams - 3:
+        return f"место {position}/{total_teams}, борьба за выживание"
+    return f"место {position}/{total_teams}, турнирная мотивация невысокая (середина таблицы)"

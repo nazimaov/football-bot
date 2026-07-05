@@ -42,7 +42,7 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
     result["away_team"] = team2
 
     info_text = "=== ДАННЫЕ МАТЧА ===\n"
-    quality = {"team_stats": False, "h2h": False, "lineups": False, "referee": False, "weather": False}
+    quality = {"team_stats": False, "h2h": False, "lineups": False, "referee": False, "weather": False, "standings": False}
     match_id = None
 
     if team1.get("id"):
@@ -75,6 +75,34 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
             result["match"] = {"id": match_id, "date": date, "stadium": stadium, "city": city}
             info_text += f"\n=== МАТЧ НАЙДЕН ===\nДата: {date} UTC\nСтадион: {stadium}\nГород: {city or '(не указан)'}\n"
 
+            tournament = (detail.get("tournament") or {}).get("uniqueTournament") or {}
+            tournament_id = tournament.get("id")
+            season_id = (detail.get("season") or {}).get("id")
+
+            standings_rows = standings.get_standings(tournament_id, season_id)
+            standings_text = standings.format_standings_text(
+                standings_rows, team1["id"], team2["id"],
+                team1.get("name", team1_name), team2.get("name", team2_name),
+            )
+            info_text += standings_text
+            if standings_rows:
+                quality["standings"] = True
+
+            row1 = standings.find_team_row(standings_rows, team1["id"])
+            row2 = standings.find_team_row(standings_rows, team2["id"])
+            total_teams = len(standings_rows)
+            motivation1 = motivation.get_motivation(row1, total_teams)
+            motivation2 = motivation.get_motivation(row2, total_teams)
+            if motivation1 or motivation2:
+                info_text += "\n=== МОТИВАЦИЯ ===\n"
+                if motivation1:
+                    info_text += f"  {team1.get('name', team1_name)}: {motivation1}\n"
+                if motivation2:
+                    info_text += f"  {team2.get('name', team2_name)}: {motivation2}\n"
+
+            result["standings"] = {"total_teams": total_teams, "team1_row": row1, "team2_row": row2}
+            result["motivation"] = {"team1": motivation1, "team2": motivation2}
+
             h2h_text = team_statistics.get_h2h_text(match_id)
             info_text += h2h_text
             if "не найдено" not in h2h_text and "недоступно" not in h2h_text:
@@ -105,14 +133,13 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
             logger.info("Ближайший матч между '%s' и '%s' не найден", team1_name, team2_name)
             info_text += "\n[!] Ближайший матч не найден через get-next-matches\n"
 
-    result["standings"] = standings.get_standings(team1.get("id"), team2.get("id"))
     result["injuries"] = injuries.get_injuries(team1.get("id"), team2.get("id"))
-    result["motivation"] = motivation.get_motivation(team1.get("id"), team2.get("id"))
     result["odds"] = odds.get_odds(match_id)
 
     quality_summary = (
         f"\n[Качество: форма={quality['team_stats']}, H2H={quality['h2h']}, "
-        f"составы={quality['lineups']}, судья={quality['referee']}, погода={quality['weather']}]"
+        f"составы={quality['lineups']}, судья={quality['referee']}, погода={quality['weather']}, "
+        f"таблица={quality['standings']}]"
     )
 
     return {"info_text": info_text, "quality_summary": quality_summary, "structured": result}
