@@ -17,3 +17,9 @@ def get_motivation(row: dict, total_teams: int) -> str:
     if position > total_teams - 3:
         return f"место {position}/{total_teams}, борьба за выживание"
     return f"место {position}/{total_teams}, турнирная мотивация невысокая (середина таблицы)"
+
+
+def get_knockout_motivation(round_name: str) -> str:
+    """Мотивация для стадии плей-офф — там нет таблицы, но мотивация всегда максимальная (игра на вылет)."""
+    stage = f" ({round_name})" if round_name else ""
+    return f"плей-офф{stage} — матч на вылет, максимальная мотивация обеих команд"

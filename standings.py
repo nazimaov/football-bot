@@ -28,6 +28,41 @@ def get_standings(tournament_id: int | None, season_id: int | None) -> list:
         return []
 
 
+def get_tournament_context(detail: dict) -> dict:
+    """Извлекает из match_data.get_match_detail() контекст турнира: название, сезон,
+    стадия/тур и признак плей-офф (там нет турнирной таблицы по определению)."""
+    tournament = detail.get("tournament") or {}
+    unique_tournament = tournament.get("uniqueTournament") or {}
+    season = detail.get("season") or {}
+    round_info = detail.get("roundInfo") or {}
+    is_knockout = tournament.get("competitionType") == 2 or bool(round_info.get("cupRoundType"))
+    return {
+        "tournament_id": unique_tournament.get("id"),
+        "season_id": season.get("id"),
+        "name": unique_tournament.get("name") or tournament.get("name") or "",
+        "season_name": season.get("name") or "",
+        "round_name": round_info.get("name") or "",
+        "round_number": round_info.get("round"),
+        "is_knockout": is_knockout,
+    }
+
+
+def format_tournament_text(context: dict) -> str:
+    """Текстовый блок с названием турнира, сезоном и стадией (тур/плей-офф)."""
+    if not context.get("name"):
+        return ""
+    text = f"\n=== ТУРНИР ===\n  {context['name']}"
+    if context.get("season_name"):
+        text += f" ({context['season_name']})"
+    if context.get("round_name"):
+        stage = "плей-офф" if context.get("is_knockout") else "тур"
+        text += f", {context['round_name']} [{stage}]"
+    elif context.get("round_number"):
+        text += f", тур {context['round_number']}"
+    text += "\n"
+    return text
+
+
 def find_team_row(rows: list, team_id: int | None) -> dict:
     """Находит строку конкретной команды в турнирной таблице. {} если не найдена."""
     for row in rows:
