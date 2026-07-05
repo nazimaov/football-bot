@@ -1,6 +1,7 @@
 """Формирование итогового текста для отправки в Telegram."""
 import logging
 import re
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -11,10 +12,29 @@ _WINNER_RE = re.compile(r"(ПОБЕДИТЕЛЬ\s*:\s*)(.*?)(\|\s*)(\d+)\s*%", r
 _TOTAL_RE = re.compile(r"(ТОТАЛ\s*:\s*)(.*?)(\|\s*)(\d+)\s*%", re.IGNORECASE)
 _BTTS_RE = re.compile(r"(ОБЕ ЗАБЬЮТ\s*:\s*)(.*?)(\|\s*)(\d+)\s*%", re.IGNORECASE)
 
+# Категории символов, которые модель иногда "выплёвывает" как битые токены
+# (private-use area, неразмеченные кодпоинты, суррогаты) — в Telegram это рендерится
+# квадратиком-плейсхолдером. Cf (форматирующие) не трогаем — там живут ZWJ/variation
+# selector, на которых держатся составные эмодзи вроде 👨‍⚖️.
+_JUNK_CATEGORIES = {"Co", "Cn", "Cs"}
+
+
+def _strip_junk_chars(text: str) -> str:
+    """Убирает нерендерящиеся символы-артефакты генерации AI (см. _JUNK_CATEGORIES)."""
+    result = []
+    for ch in text:
+        if ch in ("\n", "\r", "\t"):
+            result.append(ch)
+            continue
+        if ch == "�" or unicodedata.category(ch) in _JUNK_CATEGORIES or unicodedata.category(ch) == "Cc":
+            continue
+        result.append(ch)
+    return "".join(result)
+
 
 def format_report(ai_text: str) -> str:
     """Финальная обработка текста от AI перед отправкой пользователю."""
-    return ai_text
+    return _strip_junk_chars(ai_text)
 
 
 def split_for_telegram(text: str, chunk_size: int = TELEGRAM_CHUNK_SIZE) -> list[str]:
