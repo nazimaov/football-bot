@@ -143,6 +143,8 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
                 info_text += prediction.format_prediction_text(probs, home_name, away_name)
                 quality["poisson_model"] = True
                 result["prediction"] = probs
+                result["match"]["home_name"] = home_name
+                result["match"]["away_name"] = away_name
 
             h2h_text = team_statistics.get_h2h_text(match_id)
             info_text += h2h_text
@@ -203,4 +205,11 @@ def run_analysis(match_name: str) -> str:
     logger.info("Сбор данных по '%s' занял %.1f сек", match_name, elapsed)
 
     ai_text = ai.ask_groq(match_name, data["info_text"], data["quality_summary"])
+
+    structured = data["structured"]
+    probs = structured.get("prediction") or {}
+    home_name = structured.get("match", {}).get("home_name", "")
+    away_name = structured.get("match", {}).get("away_name", "")
+    ai_text = report.enforce_prediction_consistency(ai_text, probs, home_name, away_name)
+
     return report.format_report(ai_text)
