@@ -42,24 +42,37 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
     result["away_team"] = team2
 
     info_text = "=== ДАННЫЕ МАТЧА ===\n"
-    quality = {"team_stats": False, "h2h": False, "lineups": False, "referee": False, "weather": False, "standings": False}
+    quality = {
+        "team_stats": False, "h2h": False, "lineups": False, "referee": False,
+        "weather": False, "standings": False, "match_stats": False,
+    }
     match_id = None
+    events1, events2 = [], []
 
     if team1.get("id"):
-        info_text += team_statistics.get_team_last_matches(team1["id"], team1.get("name", team1_name))
+        events1 = team_statistics.fetch_last_matches(team1["id"])
+        info_text += team_statistics.format_last_matches_text(events1, team1["id"], team1.get("name", team1_name))
         quality["team_stats"] = True
     else:
         logger.warning("Команда не найдена: %s", team1_name)
         info_text += f"\n[!] '{team1_name}' не найдена\n"
 
     if team2.get("id"):
-        info_text += team_statistics.get_team_last_matches(team2["id"], team2.get("name", team2_name))
+        events2 = team_statistics.fetch_last_matches(team2["id"])
+        info_text += team_statistics.format_last_matches_text(events2, team2["id"], team2.get("name", team2_name))
         quality["team_stats"] = True
     else:
         logger.warning("Команда не найдена: %s", team2_name)
         info_text += f"\n[!] '{team2_name}' не найдена\n"
 
     if team1.get("id") and team2.get("id"):
+        avg1 = team_statistics.get_average_match_stats(team1["id"], events1, limit=3)
+        avg2 = team_statistics.get_average_match_stats(team2["id"], events2, limit=3)
+        avg1_text = team_statistics.format_average_stats_text(avg1, team1.get("name", team1_name))
+        avg2_text = team_statistics.format_average_stats_text(avg2, team2.get("name", team2_name))
+        if avg1_text or avg2_text:
+            info_text += "\n=== СТАТИСТИКА ПО МАТЧАМ (среднее за 3 последних) ===\n" + avg1_text + avg2_text
+            quality["match_stats"] = True
         match = match_data.get_next_match(team1["id"], team2["id"])
         if match:
             match_id = match.get("id")
@@ -146,7 +159,7 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
     quality_summary = (
         f"\n[Качество: форма={quality['team_stats']}, H2H={quality['h2h']}, "
         f"составы={quality['lineups']}, судья={quality['referee']}, погода={quality['weather']}, "
-        f"таблица={quality['standings']}]"
+        f"таблица={quality['standings']}, статистика_матчей={quality['match_stats']}]"
     )
 
     return {"info_text": info_text, "quality_summary": quality_summary, "structured": result}
