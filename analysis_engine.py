@@ -9,6 +9,7 @@ import lineups
 import match_data
 import motivation
 import odds
+import prediction
 import referee
 import report
 import standings
@@ -23,7 +24,7 @@ def _empty_result() -> dict:
     return {
         "match": {}, "home_team": {}, "away_team": {}, "standings": {},
         "statistics": {}, "lineups": {}, "injuries": {}, "referee": {},
-        "weather": {}, "odds": {}, "motivation": {},
+        "weather": {}, "odds": {}, "motivation": {}, "prediction": {},
     }
 
 
@@ -44,14 +45,16 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
     info_text = "=== ДАННЫЕ МАТЧА ===\n"
     quality = {
         "team_stats": False, "h2h": False, "lineups": False, "referee": False,
-        "weather": False, "standings": False, "match_stats": False,
+        "weather": False, "standings": False, "match_stats": False, "poisson_model": False,
     }
     match_id = None
     events1, events2 = [], []
+    scoring1, scoring2 = {}, {}
 
     if team1.get("id"):
         events1 = team_statistics.fetch_last_matches(team1["id"])
         info_text += team_statistics.format_last_matches_text(events1, team1["id"], team1.get("name", team1_name))
+        scoring1 = team_statistics.compute_scoring_stats(events1, team1["id"])
         quality["team_stats"] = True
     else:
         logger.warning("Команда не найдена: %s", team1_name)
@@ -60,6 +63,7 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
     if team2.get("id"):
         events2 = team_statistics.fetch_last_matches(team2["id"])
         info_text += team_statistics.format_last_matches_text(events2, team2["id"], team2.get("name", team2_name))
+        scoring2 = team_statistics.compute_scoring_stats(events2, team2["id"])
         quality["team_stats"] = True
     else:
         logger.warning("Команда не найдена: %s", team2_name)
@@ -91,6 +95,7 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
             tournament_context = standings.get_tournament_context(detail)
             info_text += standings.format_tournament_text(tournament_context)
 
+            league_avg = None
             if tournament_context["is_knockout"]:
                 knockout_motivation = motivation.get_knockout_motivation(tournament_context.get("round_name"))
                 info_text += f"\n=== МОТИВАЦИЯ ===\n  Обе команды: {knockout_motivation}\n"
@@ -107,6 +112,7 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
                 info_text += standings_text
                 if standings_rows:
                     quality["standings"] = True
+                league_avg = standings.get_tournament_goal_average(standings_rows)
 
                 row1 = standings.find_team_row(standings_rows, team1["id"])
                 row2 = standings.find_team_row(standings_rows, team2["id"])
@@ -122,6 +128,21 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
 
                 result["standings"] = {"total_teams": total_teams, "team1_row": row1, "team2_row": row2}
                 result["motivation"] = {"team1": motivation1, "team2": motivation2}
+
+            is_team1_home = match.get("homeTeam", {}).get("id") == team1["id"]
+            if is_team1_home:
+                home_scoring, away_scoring = scoring1, scoring2
+                home_name, away_name = team1.get("name", team1_name), team2.get("name", team2_name)
+            else:
+                home_scoring, away_scoring = scoring2, scoring1
+                home_name, away_name = team2.get("name", team2_name), team1.get("name", team1_name)
+
+            expected_goals = prediction.estimate_expected_goals(home_scoring, away_scoring, league_avg)
+            if expected_goals:
+                probs = prediction.compute_probabilities(*expected_goals)
+                info_text += prediction.format_prediction_text(probs, home_name, away_name)
+                quality["poisson_model"] = True
+                result["prediction"] = probs
 
             h2h_text = team_statistics.get_h2h_text(match_id)
             info_text += h2h_text
@@ -159,7 +180,8 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
     quality_summary = (
         f"\n[Качество: форма={quality['team_stats']}, H2H={quality['h2h']}, "
         f"составы={quality['lineups']}, судья={quality['referee']}, погода={quality['weather']}, "
-        f"таблица={quality['standings']}, статистика_матчей={quality['match_stats']}]"
+        f"таблица={quality['standings']}, статистика_матчей={quality['match_stats']}, "
+        f"модель_Пуассона={quality['poisson_model']}]"
     )
 
     return {"info_text": info_text, "quality_summary": quality_summary, "structured": result}

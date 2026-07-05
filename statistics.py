@@ -24,6 +24,25 @@ def fetch_last_matches(team_id: int, limit: int = 7) -> list:
         return []
 
 
+def compute_scoring_stats(events: list, team_id: int) -> dict:
+    """Среднее голов за/против команды по events. {} если нет завершённых матчей.
+    Используется как для текстового блока формы, так и для расчётной модели прогноза."""
+    gs, gc = [], []
+    for m in events:
+        home = m.get("homeTeam", {})
+        hs = m.get("homeScore", {}).get("current")
+        as_ = m.get("awayScore", {}).get("current")
+        if hs is None or as_ is None:
+            continue
+        is_home = home.get("id") == team_id
+        scored, conceded = (hs, as_) if is_home else (as_, hs)
+        gs.append(scored)
+        gc.append(conceded)
+    if not gs:
+        return {}
+    return {"avg_scored": sum(gs) / len(gs), "avg_conceded": sum(gc) / len(gc), "matches": len(gs)}
+
+
 def format_last_matches_text(events: list, team_id: int, team_name: str) -> str:
     """Текстовый блок: последние матчи команды + форма/среднее голов/ОЗ/ТБ2.5."""
     if not events:
