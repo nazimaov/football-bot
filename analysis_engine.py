@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 
 import ai
+import form
 import injuries
 import lineups
 import match_data
@@ -46,6 +47,7 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
     quality = {
         "team_stats": False, "h2h": False, "lineups": False, "referee": False,
         "weather": False, "standings": False, "match_stats": False, "poisson_model": False,
+        "form_detail": False,
     }
     match_id = None
     events1, events2 = [], []
@@ -77,6 +79,16 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
         if avg1_text or avg2_text:
             info_text += "\n=== СТАТИСТИКА ПО МАТЧАМ (среднее за 3 последних) ===\n" + avg1_text + avg2_text
             quality["match_stats"] = True
+
+        form1 = form.analyze_form(events1, team1["id"])
+        form2 = form.analyze_form(events2, team2["id"])
+        form1_text = form.format_form_text(form1, team1.get("name", team1_name))
+        form2_text = form.format_form_text(form2, team2.get("name", team2_name))
+        if form1_text or form2_text:
+            info_text += "\n=== ДЕТАЛИ ФОРМЫ (дом/выезд, серии, соперники) ===\n" + form1_text + form2_text
+            quality["form_detail"] = True
+        result["statistics"] = {"form": {"team1": form1, "team2": form2}}
+
         match = match_data.get_next_match(team1["id"], team2["id"])
         if match:
             match_id = match.get("id")
@@ -150,7 +162,7 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
             info_text += h2h_text
             if "не найдено" not in h2h_text and "недоступно" not in h2h_text:
                 quality["h2h"] = True
-            result["statistics"] = {"h2h_text": h2h_text}
+            result["statistics"]["h2h_text"] = h2h_text
 
             ref_name, ref_text = referee.get_referee_text(match, detail)
             info_text += ref_text
