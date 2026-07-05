@@ -63,6 +63,21 @@ def format_tournament_text(context: dict) -> str:
     return text
 
 
+def get_tournament_goal_average(rows: list) -> float | None:
+    """Средний тотал голов за матч по всему турниру, на основе уже загруженной таблицы.
+    None если посчитать не из чего (нет данных о голах/матчах)."""
+    if not rows:
+        return None
+    total_goals = sum(row.get("scoresFor", 0) or 0 for row in rows)
+    total_team_matches = sum(row.get("matches", 0) or 0 for row in rows)
+    if not total_team_matches:
+        return None
+    total_matches = total_team_matches / 2
+    if not total_matches:
+        return None
+    return total_goals / total_matches
+
+
 def find_team_row(rows: list, team_id: int | None) -> dict:
     """Находит строку конкретной команды в турнирной таблице. {} если не найдена."""
     for row in rows:
@@ -96,4 +111,7 @@ def format_standings_text(rows: list, team1_id: int | None, team2_id: int | None
         if zone:
             text += f" [{zone}]"
         text += "\n"
+    avg_goals = get_tournament_goal_average(rows)
+    if avg_goals is not None:
+        text += f"  Средний тотал по турниру: {avg_goals:.2f} гола за матч\n"
     return text
