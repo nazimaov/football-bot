@@ -145,9 +145,11 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
             if is_team1_home:
                 home_scoring, away_scoring = scoring1, scoring2
                 home_name, away_name = team1.get("name", team1_name), team2.get("name", team2_name)
+                home_id, away_id = team1.get("id"), team2.get("id")
             else:
                 home_scoring, away_scoring = scoring2, scoring1
                 home_name, away_name = team2.get("name", team2_name), team1.get("name", team1_name)
+                home_id, away_id = team2.get("id"), team1.get("id")
 
             expected_goals = prediction.estimate_expected_goals(home_scoring, away_scoring, league_avg)
             if expected_goals:
@@ -170,7 +172,7 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
                 quality["referee"] = True
             result["referee"] = {"name": ref_name}
 
-            lineups_text = lineups.get_lineups(match_id)
+            lineups_text = lineups.get_lineups(match_id, home_id, away_id)
             info_text += lineups_text
             if "[!]" not in lineups_text:
                 quality["lineups"] = True
