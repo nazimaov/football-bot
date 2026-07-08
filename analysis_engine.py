@@ -15,6 +15,7 @@ import referee
 import report
 import standings
 import statistics as team_statistics
+import tracker
 import weather
 from utils import split_teams, extract_venue_city
 
@@ -47,7 +48,7 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
     quality = {
         "team_stats": False, "h2h": False, "lineups": False, "referee": False,
         "weather": False, "standings": False, "match_stats": False, "poisson_model": False,
-        "form_detail": False,
+        "form_detail": False, "odds": False,
     }
     match_id = None
     events1, events2 = [], []
@@ -152,13 +153,27 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
                 home_id, away_id = team2.get("id"), team1.get("id")
 
             expected_goals = prediction.estimate_expected_goals(home_scoring, away_scoring, league_avg)
+            model_probs = None
             if expected_goals:
-                probs = prediction.compute_probabilities(*expected_goals)
-                info_text += prediction.format_prediction_text(probs, home_name, away_name)
+                model_probs = prediction.compute_probabilities(*expected_goals)
+                info_text += prediction.format_prediction_text(model_probs, home_name, away_name)
                 quality["poisson_model"] = True
+
+            market_odds = odds.get_odds(match_id)
+            info_text += odds.format_odds_text(market_odds, home_name, away_name)
+            if market_odds:
+                quality["odds"] = True
+            result["odds"] = market_odds
+
+            probs = prediction.blend_with_odds(model_probs, market_odds)
+            if probs:
+                pick = prediction.pick_best_bet(probs, home_name, away_name)
+                info_text += prediction.format_verdict_text(pick)
                 result["prediction"] = probs
+                result["verdict"] = pick
                 result["match"]["home_name"] = home_name
                 result["match"]["away_name"] = away_name
+                result["match"]["ts"] = ts
 
             h2h_text = team_statistics.get_h2h_text(match_id)
             info_text += h2h_text
@@ -191,13 +206,12 @@ def analyze_match(team1_name: str, team2_name: str) -> dict:
             info_text += "\n[!] Ближайший матч не найден через get-next-matches\n"
 
     result["injuries"] = injuries.get_injuries(team1.get("id"), team2.get("id"))
-    result["odds"] = odds.get_odds(match_id)
 
     quality_summary = (
         f"\n[Качество: форма={quality['team_stats']}, H2H={quality['h2h']}, "
         f"составы={quality['lineups']}, судья={quality['referee']}, погода={quality['weather']}, "
         f"таблица={quality['standings']}, статистика_матчей={quality['match_stats']}, "
-        f"модель_Пуассона={quality['poisson_model']}]"
+        f"модель_Пуассона={quality['poisson_model']}, кэфы={quality['odds']}]"
     )
 
     return {"info_text": info_text, "quality_summary": quality_summary, "structured": result}
@@ -222,8 +236,16 @@ def run_analysis(match_name: str) -> str:
 
     structured = data["structured"]
     probs = structured.get("prediction") or {}
-    home_name = structured.get("match", {}).get("home_name", "")
-    away_name = structured.get("match", {}).get("away_name", "")
+    match_info = structured.get("match", {})
+    home_name = match_info.get("home_name", "")
+    away_name = match_info.get("away_name", "")
     ai_text = report.enforce_prediction_consistency(ai_text, probs, home_name, away_name)
+
+    pick = structured.get("verdict") or {}
+    if pick:
+        ai_text += "\n" + report.format_verdict_footer(pick)
+        tracker.log_prediction(
+            match_info.get("id"), match_info.get("ts", 0), home_name, away_name, probs, pick,
+        )
 
     return report.format_report(ai_text)
