@@ -7,7 +7,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram.constants import ChatAction
 
 import config
+import match_data
 import report
+import tracker
 from analysis_engine import run_analysis
 from logger import setup_logging
 
@@ -46,13 +48,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Manchester City Liverpool\n"
         "• Бавария / Дортмунд\n\n"
         "📊 Форма | 👥 Составы | 🤕 Травмы\n"
-        "👨‍⚖️ Судья | 🌦 Погода | 📈 H2H\n\n"
+        "👨‍⚖️ Судья | 🌦 Погода | 📈 H2H | 💰 Кэфы\n\n"
+        "/stats — реальная точность прогнозов\n"
         "Лучше за 30-60 мин до матча."
     )
 
 
 async def example_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Реал Мадрид vs Барселона")
+
+
+def _collect_stats() -> str:
+    tracker.evaluate_pending(match_data.get_match_detail)
+    return tracker.format_stats_text()
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Реальная точность прогнозов по завершённым матчам."""
+    await update.message.chat.send_action(ChatAction.TYPING)
+    loop = asyncio.get_event_loop()
+    text = await loop.run_in_executor(None, _collect_stats)
+    await update.message.reply_text(text)
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -100,6 +116,7 @@ def main():
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("example", example_command))
+    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze_message))
     logger.info("Бот работает!")

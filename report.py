@@ -37,6 +37,25 @@ def format_report(ai_text: str) -> str:
     return _strip_junk_chars(ai_text)
 
 
+def format_verdict_footer(pick: dict) -> str:
+    """Детерминированный вердикт модели в конце отчёта — не зависит от текста AI."""
+    if not pick:
+        return ""
+    p = pick.get("prob", 0) * 100
+    label = pick.get("label", "?")
+    if pick.get("tier") == "confident":
+        return (f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🤖 ВЕРДИКТ МОДЕЛИ: ✅ {label} — {p:.0f}%\n"
+                f"━━━━━━━━━━━━━━━━━━━━")
+    if pick.get("tier") == "moderate":
+        return (f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🤖 ВЕРДИКТ МОДЕЛИ: ⚖️ {label} — {p:.0f}% (умеренная уверенность)\n"
+                f"━━━━━━━━━━━━━━━━━━━━")
+    return (f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🤖 ВЕРДИКТ МОДЕЛИ: ⛔ уверенной ставки нет (максимум {p:.0f}%) — лучше пропустить\n"
+            f"━━━━━━━━━━━━━━━━━━━━")
+
+
 def split_for_telegram(text: str, chunk_size: int = TELEGRAM_CHUNK_SIZE) -> list[str]:
     """Разбивает длинный текст на части, укладывающиеся в лимит сообщения Telegram."""
     if len(text) <= chunk_size:
@@ -76,12 +95,13 @@ def enforce_prediction_consistency(ai_text: str, probs: dict, home_name: str, aw
 
     def fix_total(m: re.Match) -> str:
         label = m.group(2)
-        low = label.lower()
+        low = label.lower().strip()
         if "2.5" not in label and "2,5" not in label:
             return m.group(0)
-        if "больш" in low:
+        # AI пишет и "Больше 2.5", и коротко "Б 2.5"/"ТБ 2.5" — принимаем оба варианта
+        if "больш" in low or low.startswith("б") or low.startswith("тб") or "over" in low:
             target = probs["over25"] * 100
-        elif "меньш" in low:
+        elif "меньш" in low or low.startswith("м") or low.startswith("тм") or "under" in low:
             target = probs["under25"] * 100
         else:
             return m.group(0)
